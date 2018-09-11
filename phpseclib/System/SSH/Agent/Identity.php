@@ -1,5 +1,4 @@
 <?php
-
 /**
  * Pure-PHP ssh-agent client.
  *
@@ -16,8 +15,6 @@
 
 namespace phpseclib\System\SSH\Agent;
 
-use phpseclib\Crypt\RSA;
-use phpseclib\Exception\UnsupportedAlgorithmException;
 use phpseclib\System\SSH\Agent;
 
 /**
@@ -42,7 +39,7 @@ class Identity
      * @access private
      * @see self::getPublicKey()
      */
-    private $key;
+    var $key;
 
     /**
      * Key Blob
@@ -51,7 +48,7 @@ class Identity
      * @access private
      * @see self::sign()
      */
-    private $key_blob;
+    var $key_blob;
 
     /**
      * Socket Resource
@@ -60,7 +57,7 @@ class Identity
      * @access private
      * @see self::sign()
      */
-    private $fsock;
+    var $fsock;
 
     /**
      * Default Constructor.
@@ -69,7 +66,7 @@ class Identity
      * @return \phpseclib\System\SSH\Agent\Identity
      * @access private
      */
-    public function __construct($fsock)
+    function __construct($fsock)
     {
         $this->fsock = $fsock;
     }
@@ -82,7 +79,7 @@ class Identity
      * @param \phpseclib\Crypt\RSA $key
      * @access private
      */
-    public function setPublicKey($key)
+    function setPublicKey($key)
     {
         $this->key = $key;
         $this->key->setPublicKey();
@@ -97,7 +94,7 @@ class Identity
      * @param string $key_blob
      * @access private
      */
-    public function setPublicKeyBlob($key_blob)
+    function setPublicKeyBlob($key_blob)
     {
         $this->key_blob = $key_blob;
     }
@@ -107,28 +104,26 @@ class Identity
      *
      * Wrapper for $this->key->getPublicKey()
      *
-     * @param string $type optional
+     * @param int $format optional
      * @return mixed
      * @access public
      */
-    public function getPublicKey($type = 'PKCS8')
+    function getPublicKey($format = null)
     {
-        return $this->key->getPublicKey($type);
+        return !isset($format) ? $this->key->getPublicKey() : $this->key->getPublicKey($format);
     }
 
     /**
-     * Sets the hash
+     * Set Signature Mode
      *
-     * ssh-agent only supports signatures with sha1 hashes but to maintain BC with RSA.php this function exists
+     * Doesn't do anything as ssh-agent doesn't let you pick and choose the signature mode. ie.
+     * ssh-agent's only supported mode is \phpseclib\Crypt\RSA::SIGNATURE_PKCS1
      *
-     * @param string $hash optional
+     * @param int $mode
      * @access public
      */
-    public function setHash($hash = 'sha1')
+    function setSignatureMode($mode)
     {
-        if ($hash != 'sha1') {
-            throw new UnsupportedAlgorithmException('ssh-agent can only be used with the sha1 hash');
-        }
     }
 
     /**
@@ -137,29 +132,22 @@ class Identity
      * See "2.6.2 Protocol 2 private key signature request"
      *
      * @param string $message
-     * @param int $padding optional
      * @return string
-     * @throws \RuntimeException on connection errors
-     * @throws \phpseclib\Exception\UnsupportedAlgorithmException if the algorithm is unsupported
      * @access public
      */
-    public function sign($message, $padding = RSA::PADDING_PKCS1)
+    function sign($message)
     {
-        if ($padding != RSA::PADDING_PKCS1 && $padding != RSA::PADDING_RELAXED_PKCS1) {
-            throw new UnsupportedAlgorithmException('ssh-agent can only create PKCS1 signatures');
-        }
-
         // the last parameter (currently 0) is for flags and ssh-agent only defines one flag (for ssh-dss): SSH_AGENT_OLD_SIGNATURE
         $packet = pack('CNa*Na*N', Agent::SSH_AGENTC_SIGN_REQUEST, strlen($this->key_blob), $this->key_blob, strlen($message), $message, 0);
         $packet = pack('Na*', strlen($packet), $packet);
         if (strlen($packet) != fputs($this->fsock, $packet)) {
-            throw new \RuntimeException('Connection closed during signing');
+            user_error('Connection closed during signing');
         }
 
         $length = current(unpack('N', fread($this->fsock, 4)));
         $type = ord(fread($this->fsock, 1));
         if ($type != Agent::SSH_AGENT_SIGN_RESPONSE) {
-            throw new \RuntimeException('Unable to retrieve signature');
+            user_error('Unable to retrieve signature');
         }
 
         $signature_blob = fread($this->fsock, $length - 1);

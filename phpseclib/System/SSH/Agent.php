@@ -8,7 +8,7 @@
  * Here are some examples of how to use this library:
  * <code>
  * <?php
- *    include 'vendor/autoload.php';
+ *    include 'vendor/composer.php';
  *
  *    $agent = new \phpseclib\System\SSH\Agent();
  *
@@ -33,11 +33,8 @@
 
 namespace phpseclib\System\SSH;
 
-use ParagonIE\ConstantTime\Base64;
 use phpseclib\Crypt\RSA;
-use phpseclib\Exception\BadConfigurationException;
 use phpseclib\System\SSH\Agent\Identity;
-use phpseclib\Common\Functions\Objects;
 
 /**
  * Pure-PHP ssh-agent client identity factory
@@ -89,53 +86,38 @@ class Agent
      * @var resource
      * @access private
      */
-    private $fsock;
+    var $fsock;
 
     /**
      * Agent forwarding status
      *
-     * @var int
      * @access private
      */
-    private $forward_status = self::FORWARD_NONE;
+    var $forward_status = self::FORWARD_NONE;
 
     /**
      * Buffer for accumulating forwarded authentication
      * agent data arriving on SSH data channel destined
      * for agent unix socket
      *
-     * @var string
      * @access private
      */
-    private $socket_buffer = '';
+    var $socket_buffer = '';
 
     /**
      * Tracking the number of bytes we are expecting
      * to arrive for the agent socket on the SSH data
      * channel
-     *
-     * @var int
-     * @access private
      */
-    private $expected_bytes = 0;
-
-    /**
-     * The current request channel
-     *
-     * @var int
-     * @access private
-     */
-    private $request_channel;
+    var $expected_bytes = 0;
 
     /**
      * Default Constructor
      *
      * @return \phpseclib\System\SSH\Agent
-     * @throws \phpseclib\Exception\BadConfigurationException if SSH_AUTH_SOCK cannot be found
-     * @throws \RuntimeException on connection errors
      * @access public
      */
-    public function __construct()
+    function __construct()
     {
         switch (true) {
             case isset($_SERVER['SSH_AUTH_SOCK']):
@@ -145,12 +127,13 @@ class Agent
                 $address = $_ENV['SSH_AUTH_SOCK'];
                 break;
             default:
-                throw new BadConfigurationException('SSH_AUTH_SOCK not found');
+                user_error('SSH_AUTH_SOCK not found');
+                return false;
         }
 
         $this->fsock = fsockopen('unix://' . $address, 0, $errno, $errstr);
         if (!$this->fsock) {
-            throw new \RuntimeException("Unable to connect to ssh-agent (Error $errno: $errstr)");
+            user_error("Unable to connect to ssh-agent (Error $errno: $errstr)");
         }
     }
 
@@ -161,32 +144,31 @@ class Agent
      * Returns an array containing zero or more \phpseclib\System\SSH\Agent\Identity objects
      *
      * @return array
-     * @throws \RuntimeException on receipt of unexpected packets
      * @access public
      */
-    public function requestIdentities()
+    function requestIdentities()
     {
         if (!$this->fsock) {
-            return [];
+            return array();
         }
 
         $packet = pack('NC', 1, self::SSH_AGENTC_REQUEST_IDENTITIES);
         if (strlen($packet) != fputs($this->fsock, $packet)) {
-            throw new \RuntimeException('Connection closed while requesting identities');
+            user_error('Connection closed while requesting identities');
         }
 
         $length = current(unpack('N', fread($this->fsock, 4)));
         $type = ord(fread($this->fsock, 1));
         if ($type != self::SSH_AGENT_IDENTITIES_ANSWER) {
-            throw new \RuntimeException('Unable to request identities');
+            user_error('Unable to request identities');
         }
 
-        $identities = [];
+        $identities = array();
         $keyCount = current(unpack('N', fread($this->fsock, 4)));
         for ($i = 0; $i < $keyCount; $i++) {
             $length = current(unpack('N', fread($this->fsock, 4)));
             $key_blob = fread($this->fsock, $length);
-            $key_str = 'ssh-rsa ' . Base64::encode($key_blob);
+            $key_str = 'ssh-rsa ' . base64_encode($key_blob);
             $length = current(unpack('N', fread($this->fsock, 4)));
             if ($length) {
                 $key_str.= ' ' . fread($this->fsock, $length);
@@ -196,7 +178,7 @@ class Agent
             switch ($key_type) {
                 case 'ssh-rsa':
                     $key = new RSA();
-                    $key->load($key_str);
+                    $key->loadKey($key_str);
                     break;
                 case 'ssh-dss':
                     // not currently supported
@@ -219,11 +201,11 @@ class Agent
      * Signal that agent forwarding should
      * be requested when a channel is opened
      *
-     * @param \phpseclib\Net\SSH2 $ssh
+     * @param Net_SSH2 $ssh
      * @return bool
      * @access public
      */
-    public function startSSHForwarding($ssh)
+    function startSSHForwarding($ssh)
     {
         if ($this->forward_status == self::FORWARD_NONE) {
             $this->forward_status = self::FORWARD_REQUEST;
@@ -233,37 +215,38 @@ class Agent
     /**
      * Request agent forwarding of remote server
      *
-     * @param \phpseclib\Net\SSH2 $ssh
+     * @param Net_SSH2 $ssh
      * @return bool
      * @access private
      */
-    private function request_forwarding($ssh)
+    function _request_forwarding($ssh)
     {
-        $this->request_channel = Objects::callFunc($ssh, 'get_open_channel');
-        if ($this->request_channel === false) {
+        $request_channel = $ssh->_get_open_channel();
+        if ($request_channel === false) {
             return false;
         }
 
         $packet = pack(
             'CNNa*C',
             NET_SSH2_MSG_CHANNEL_REQUEST,
-            Objects::getVar($ssh, 'server_channels')[$this->request_channel],
+            $ssh->server_channels[$request_channel],
             strlen('auth-agent-req@openssh.com'),
             'auth-agent-req@openssh.com',
             1
         );
 
-        $this->update_channel_status($ssh, NET_SSH2_MSG_CHANNEL_REQUEST);
-        if (!Objects::callFunc($ssh, 'send_binary_packet', [$packet])) {
+        $ssh->channel_status[$request_channel] = NET_SSH2_MSG_CHANNEL_REQUEST;
+
+        if (!$ssh->_send_binary_packet($packet)) {
             return false;
         }
 
-        $response = Objects::callFunc($ssh, 'get_channel_packet', [$this->request_channel]);
+        $response = $ssh->_get_channel_packet($request_channel);
         if ($response === false) {
             return false;
         }
 
-        $this->update_channel_status($ssh, NET_SSH2_MSG_CHANNEL_OPEN);
+        $ssh->channel_status[$request_channel] = NET_SSH2_MSG_CHANNEL_OPEN;
         $this->forward_status = self::FORWARD_ACTIVE;
 
         return true;
@@ -276,13 +259,13 @@ class Agent
      * open to give the SSH Agent an opportunity
      * to take further action. i.e. request agent forwarding
      *
-     * @param \phpseclib\Net\SSH2 $ssh
+     * @param Net_SSH2 $ssh
      * @access private
      */
-    private function on_channel_open($ssh)
+    function _on_channel_open($ssh)
     {
         if ($this->forward_status == self::FORWARD_REQUEST) {
-            $this->request_forwarding($ssh);
+            $this->_request_forwarding($ssh);
         }
     }
 
@@ -290,11 +273,10 @@ class Agent
      * Forward data to SSH Agent and return data reply
      *
      * @param string $data
-     * @return string Data from SSH Agent
-     * @throws \RuntimeException on connection errors
+     * @return data from SSH Agent
      * @access private
      */
-    private function forward_data($data)
+    function _forward_data($data)
     {
         if ($this->expected_bytes > 0) {
             $this->socket_buffer.= $data;
@@ -310,7 +292,7 @@ class Agent
         }
 
         if (strlen($this->socket_buffer) != fwrite($this->fsock, $this->socket_buffer)) {
-            throw new \RuntimeException('Connection closed attempting to forward data to SSH agent');
+            user_error('Connection closed attempting to forward data to SSH agent');
         }
 
         $this->socket_buffer = '';
@@ -322,19 +304,5 @@ class Agent
         $agent_reply_data = current(unpack('a*', $agent_reply_data));
 
         return pack('Na*', $agent_reply_bytes, $agent_reply_data);
-    }
-
-    /**
-     * Forward data to SSH Agent and return data reply
-     *
-     * @param \phpseclib\Net\SSH2 $ssh
-     * @param integer $status
-     * @access private
-     */
-    private function update_channel_status($ssh, $status)
-    {
-        $temp = Objects::getVar($ssh, 'channel_status');
-        $temp[$this->request_channel] = $status;
-        Objects::setVar($ssh, 'channel_status', $temp);
     }
 }
